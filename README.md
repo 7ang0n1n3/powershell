@@ -45,7 +45,7 @@ A live-updating network path analyser that combines traceroute and continuous pi
 .\mtr.ps1 example.com -c 60 -r
 ```
 
-**Version:** 1.1.0 &nbsp;|&nbsp; [Full documentation →](README-mtr.md)
+**Version:** 1.1.1 &nbsp;|&nbsp; [Full documentation →](README-mtr.md)
 
 ---
 
@@ -118,6 +118,9 @@ Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned
 ---
 
 ### mtr.ps1
+
+#### v1.1.1 — 2026-02-26
+- Fixed parse error on Windows PowerShell 5.1: hoisted nested helper functions (`rj`, `lj`, `fRTT`, `fLoss`, `lossC`) out of `Render-Table` to script scope; replaced inner `function ln` with direct `StringBuilder.Append` calls to eliminate the nested-function / dynamic-scope issue
 
 #### v1.1.0 — 2026-02-26
 - Screen is now cleared on startup; table is pinned to row 0

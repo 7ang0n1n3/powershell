@@ -193,6 +193,38 @@ function Get-Or-Add-Hop {
     return $hopByTTL[$ttl]
 }
 
+# ── Rendering helpers (script scope — avoids nested-function parser issues) ────
+
+function rj {
+    param([string]$s, [int]$n)
+    $s.PadLeft($n)
+}
+
+function lj {
+    param([string]$s, [int]$n)
+    if ($s.Length -gt $n) { $s.Substring(0, $n - 1) + [char]0x2026 }
+    else { $s.PadRight($n) }
+}
+
+function fRTT {
+    param([double]$v)
+    if ([double]::IsNaN($v) -or $v -lt 0 -or $v -eq [double]::MaxValue) { '     --' }
+    else { '{0,7:F1}' -f $v }
+}
+
+function fLoss {
+    param([double]$v)
+    if ([double]::IsNaN($v)) { '    -- ' }
+    else { '{0,5:F1}%' -f $v }
+}
+
+function lossC {
+    param([double]$p)
+    if ([double]::IsNaN($p) -or $p -eq 0) { $GREEN }
+    elseif ($p -lt 10) { $YELLOW }
+    else { $RED }
+}
+
 # ── Rendering ─────────────────────────────────────────────────────────────────
 
 $displayRow   = -1
@@ -203,31 +235,15 @@ function Render-Table {
 
     $w     = [Math]::Max(80, [Console]::WindowWidth) - 1
     $hostW = [Math]::Max(24, [Math]::Min(48, $w - 62))
-
-    # Local helpers (access $out via dynamic scope)
-    function rj   { param([string]$s, [int]$n) $s.PadLeft($n) }
-    function lj   { param([string]$s, [int]$n)
-                        if ($s.Length -gt $n) { $s.Substring(0,$n-1) + [char]0x2026 }
-                        else { $s.PadRight($n) } }
-    function fRTT { param([double]$v)
-                        if ([double]::IsNaN($v) -or $v -lt 0 -or $v -eq [double]::MaxValue) { '     --' }
-                        else { '{0,7:F1}' -f $v } }
-    function fLoss { param([double]$v)
-                        if ([double]::IsNaN($v)) { '    -- ' }
-                        else { '{0,5:F1}%' -f $v } }
-    function lossC { param([double]$p)
-                        if ([double]::IsNaN($p) -or $p -eq 0) { $GREEN }
-                        elseif ($p -lt 10) { $YELLOW }
-                        else { $RED } }
+    $eol   = "${E}[0K`n"
 
     $buf = [Text.StringBuilder]::new()
-    function ln { param([string]$s = '') [void]$buf.Append("${s}${E}[0K`n") }
 
     # Header
     $ts     = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
     $status = if ($Final) { "${GREEN}Done${R}" } else { "${GRAY}Ctrl+C to quit${R}" }
-    ln " ${BOLD}${CYAN}MTR${R}  ─  ${targetLabel}   ${GRAY}${ts}${R}   ${status}"
-    ln "${GRAY}$('─' * $w)${R}"
+    [void]$buf.Append(" ${BOLD}${CYAN}MTR${R}  --  ${targetLabel}   ${GRAY}${ts}${R}   ${status}${eol}")
+    [void]$buf.Append("${GRAY}$('-' * $w)${R}${eol}")
 
     # Column header
     $ch  = " ${BOLD}"
@@ -241,7 +257,7 @@ function Render-Table {
     $ch += (rj 'Best'  7) + '  '
     $ch += (rj 'Worst' 7) + '  '
     $ch += (rj 'StDev' 7) + $R
-    ln $ch
+    [void]$buf.Append("${ch}${eol}")
 
     # Hop rows
     foreach ($hop in $hops) {
@@ -258,23 +274,23 @@ function Render-Table {
         $lClr = lossC $loss
 
         $row  = ' '
-        $row += (rj "$($hop.TTL)"       3) + '  '
+        $row += (rj "$($hop.TTL)"      3) + '  '
         $row += "${hClr}$(lj $hostStr $hostW)${R}  "
         $row += "${lClr}$(fLoss $loss)${R}  "
-        $row += (rj "$($hop.Sent)"      5) + '  '
-        $row += (rj "$($hop.Received)"  5) + '  '
-        $row += (fRTT $hop.LastRTT)        + '  '
-        $row += (fRTT $avg)                + '  '
-        $row += (fRTT $best)               + '  '
-        $row += (fRTT $hop.WorstRTT)       + '  '
+        $row += (rj "$($hop.Sent)"     5) + '  '
+        $row += (rj "$($hop.Received)" 5) + '  '
+        $row += (fRTT $hop.LastRTT)       + '  '
+        $row += (fRTT $avg)               + '  '
+        $row += (fRTT $best)              + '  '
+        $row += (fRTT $hop.WorstRTT)      + '  '
         $row += (fRTT $stddev)
-        ln $row
+        [void]$buf.Append("${row}${eol}")
     }
 
     # Footer
-    ln "${GRAY}$('─' * $w)${R}"
+    [void]$buf.Append("${GRAY}$('-' * $w)${R}${eol}")
     $roundInfo = if ($Count -gt 0) { "Round $Round / $Count" } else { "Round $Round" }
-    ln " ${GRAY}${roundInfo}   Interval: ${Interval}s   Timeout: ${PingTimeout}ms${R}"
+    [void]$buf.Append(" ${GRAY}${roundInfo}   Interval: ${Interval}s   Timeout: ${PingTimeout}ms${R}${eol}")
 
     $numLines = 5 + $hops.Count   # title + sep + colhdr + hops + sep + footer
 
