@@ -1,4 +1,4 @@
-# mtr.ps1
+# mtr.ps1 — MTR - Powershell version (v1.0)
 
 A lightweight MTR (Matt's Traceroute) clone written in PowerShell. Combines traceroute and continuous ping into a single live-updating terminal display, showing per-hop latency and packet-loss statistics — no external tools required.
 
@@ -53,12 +53,25 @@ A lightweight MTR (Matt's Traceroute) clone written in PowerShell. Combines trac
 .\mtr.ps1 10.0.0.1 -c 50 -m 15 -n -r
 ```
 
+## Interactive Keys
+
+In live (non-report) mode the following keys are active at any time:
+
+| Key | Action |
+|-----|--------|
+| `q` | Quit the script cleanly (same as Ctrl+C) |
+| `R` | Restart — clears all statistics and re-discovers the route from scratch |
+
+Keys are shown in the header on the KEYS line and are polled non-blocking, so they respond during both the probing phase and the inter-round sleep.
+
 ## Display
 
 The screen clears on startup and the table is pinned to the top. On the first round, each hop row appears as its ICMP reply arrives — the table grows live as the route is discovered. From round two onward the full table redraws in place once per round.
 
 ```
- MTR  ─  google.com (142.250.80.46)   2026-02-26 12:00:00   Ctrl+C to quit
+              MTR - Powershell version (v1.0)
+ SRC myhostname (192.168.1.10) -> DST google.com (142.250.80.46)   2026-03-07 12:00:00
+ KEYS : [q]uit  [R]estart statistics
  ────────────────────────────────────────────────────────────────────────────
    #  Host                               Loss%   Snt   Rcv    Last     Avg    Best   Worst   StDev
    1  _gateway (192.168.1.1)              0.0%    42    42     1.3     1.2     0.8     3.1     0.3
@@ -87,11 +100,13 @@ The screen clears on startup and the table is pinned to the top. On the first ro
 
 ### Colour Coding
 
-| Colour | Loss% meaning |
-|--------|---------------|
-| Green | 0% — no loss |
-| Yellow | > 0% and < 10% — some loss |
-| Red | ≥ 10% — significant loss |
+| Colour | Meaning |
+|--------|---------|
+| Green | 0% cumulative loss |
+| Yellow | > 0% and < 10% cumulative loss |
+| Red | ≥ 10% cumulative loss |
+| **Red + Bold** (Host & Loss%) | The most recent probe to this hop was lost |
+| Bold row | Any cumulative packet loss on this hop |
 
 Hops with no reply (`???`) are shown in grey.
 

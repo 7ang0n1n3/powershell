@@ -86,6 +86,7 @@ function New-Hop {
         Hostname = '???'
         Sent     = 0
         Received = 0
+        LastLost = $false
         LastRTT  = [double]::NaN
         BestRTT  = [double]::MaxValue
         WorstRTT = [double]::NaN
@@ -157,10 +158,16 @@ try {
     exit 1
 }
 
-$targetLabel = if ($Target -ne $targetIP) {
-    "${BOLD}${Target}${R} (${targetIP})"
-} else {
-    "${BOLD}${targetIP}${R}"
+# ── Resolve source ─────────────────────────────────────────────────────────────
+
+$srcHostname = [Net.Dns]::GetHostName()
+try {
+    $udp = [Net.Sockets.UdpClient]::new()
+    $udp.Connect($targetIP, 80)
+    $srcIP = ([Net.IPEndPoint]$udp.Client.LocalEndPoint).Address.ToString()
+    $udp.Close()
+} catch {
+    $srcIP = '???'
 }
 
 # ── Probe ─────────────────────────────────────────────────────────────────────
@@ -240,9 +247,15 @@ function Render-Table {
     $buf = [Text.StringBuilder]::new()
 
     # Header
-    $ts     = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
-    $status = if ($Final) { "${GREEN}Done${R}" } else { "${GRAY}Ctrl+C to quit${R}" }
-    [void]$buf.Append(" ${BOLD}${CYAN}MTR${R}  --  ${targetLabel}   ${GRAY}${ts}${R}   ${status}${eol}")
+    $title    = 'MTR - Powershell version (v1.0)'
+    $titlePad = ' ' * [Math]::Max(0, [int](($w - $title.Length) / 2))
+    [void]$buf.Append("${titlePad}${BOLD}${CYAN}${title}${R}${eol}")
+
+    $srcLabel = "${srcHostname} (${srcIP})"
+    $dstLabel = if ($Target -ne $targetIP) { "${Target} (${targetIP})" } else { $targetIP }
+    $ts       = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
+    [void]$buf.Append(" SRC ${srcLabel} -> DST ${dstLabel}   ${GRAY}${ts}${R}${eol}")
+    [void]$buf.Append(" ${GRAY}KEYS :${R} [${BOLD}q${R}]uit  [${BOLD}R${R}]estart statistics${eol}")
     [void]$buf.Append("${GRAY}$('-' * $w)${R}${eol}")
 
     # Column header
@@ -270,20 +283,24 @@ function Render-Table {
         $stddev = Get-StdDev $hop
         $best   = if ($hop.BestRTT -eq [double]::MaxValue) { [double]::NaN } else { $hop.BestRTT }
 
-        $hClr = if ($hop.IP -eq '???') { $GRAY } else { $CYAN }
-        $lClr = lossC $loss
+        $hClr = if ($hop.LastLost)              { "${RED}${BOLD}" }
+                elseif ($hop.IP -eq '???')      { $GRAY }
+                else                            { $CYAN }
+        $lClr = if ($hop.LastLost)              { "${RED}${BOLD}" }
+                else                            { lossC $loss }
+        $rb   = if (-not [double]::IsNaN($loss) -and $loss -gt 0) { $BOLD } else { '' }
 
         $row  = ' '
-        $row += (rj "$($hop.TTL)"      3) + '  '
+        $row += "${rb}$(rj "$($hop.TTL)" 3)  "
         $row += "${hClr}$(lj $hostStr $hostW)${R}  "
         $row += "${lClr}$(fLoss $loss)${R}  "
-        $row += (rj "$($hop.Sent)"     5) + '  '
-        $row += (rj "$($hop.Received)" 5) + '  '
-        $row += (fRTT $hop.LastRTT)       + '  '
-        $row += (fRTT $avg)               + '  '
-        $row += (fRTT $best)              + '  '
-        $row += (fRTT $hop.WorstRTT)      + '  '
-        $row += (fRTT $stddev)
+        $row += "${rb}$(rj "$($hop.Sent)" 5)  "
+        $row += "${rb}$(rj "$($hop.Received)" 5)  "
+        $row += "${rb}$(fRTT $hop.LastRTT)  "
+        $row += "${rb}$(fRTT $avg)  "
+        $row += "${rb}$(fRTT $best)  "
+        $row += "${rb}$(fRTT $hop.WorstRTT)  "
+        $row += "${rb}$(fRTT $stddev)${R}"
         [void]$buf.Append("${row}${eol}")
     }
 
@@ -292,7 +309,7 @@ function Render-Table {
     $roundInfo = if ($Count -gt 0) { "Round $Round / $Count" } else { "Round $Round" }
     [void]$buf.Append(" ${GRAY}${roundInfo}   Interval: ${Interval}s   Timeout: ${PingTimeout}ms${R}${eol}")
 
-    $numLines = 5 + $hops.Count   # title + sep + colhdr + hops + sep + footer
+    $numLines = 7 + $hops.Count   # title + src->dst + keys + sep + colhdr + hops + sep + footer
 
     # Place/reposition cursor
     if (-not $Report) {
@@ -316,21 +333,33 @@ function Render-Table {
 
 # ── Main loop ─────────────────────────────────────────────────────────────────
 
-$round       = 0
-$maxReached  = $MaxHops
+$round      = 0
+$maxReached = $MaxHops
+$shouldQuit = $false
+$doRestart  = $true   # first iteration acts as initial start
 
 if ($Report) {
     Write-Host "MTR report — target: $targetLabel — $Count rounds`n" -ForegroundColor Cyan
-} else {
-    # Clear screen and pin the table to the top
-    [Console]::Clear()
-    $script:displayRow   = 0
-    $script:prevNumLines = 0
 }
 
 try {
-    while ($true) {
-        $t0          = [DateTime]::UtcNow
+    while (-not $shouldQuit) {
+
+        # ── Reset state on first run or after R ───────────────────────────────
+        if ($doRestart) {
+            $hops.Clear()
+            $hopByTTL.Clear()
+            $round      = 0
+            $maxReached = $MaxHops
+            $doRestart  = $false
+            if (-not $Report) {
+                [Console]::Clear()
+                $script:displayRow   = 0
+                $script:prevNumLines = 0
+            }
+        }
+
+        $t0           = [DateTime]::UtcNow
         $isFirstRound = $round -eq 0
 
         for ($ttl = 1; $ttl -le $maxReached; $ttl++) {
@@ -340,6 +369,7 @@ try {
             $reply = Send-Probe $ttl
             if ($null -eq $reply) {
                 # Probe threw — show the hop as unresponsive immediately
+                $hop.LastLost = $true
                 if (-not $Report -and $isFirstRound) { Render-Table -Round 0 }
                 continue
             }
@@ -352,6 +382,7 @@ try {
                         $hop.Hostname = Resolve-IP $ip
                     }
                     Update-RTT $hop $reply.RoundtripTime
+                    $hop.LastLost = $false
                 }
                 'Success' {
                     $ip = $reply.Address.ToString()
@@ -360,9 +391,13 @@ try {
                         $hop.Hostname = Resolve-IP $ip
                     }
                     Update-RTT $hop $reply.RoundtripTime
+                    $hop.LastLost = $false
                     $maxReached = $ttl   # stop probing beyond the destination
                 }
-                # TimedOut / DestinationUnreachable / etc.: sent counted, no RTT
+                default {
+                    # TimedOut / DestinationUnreachable / etc.: sent counted, no RTT
+                    $hop.LastLost = $true
+                }
             }
 
             # On the first round, redraw after every hop so the table grows live
@@ -373,16 +408,37 @@ try {
 
         if (-not $Report) {
             Render-Table -Round $round
+            # Check for keypress after each render
+            if ([Console]::KeyAvailable) {
+                $key = [Console]::ReadKey($true)
+                switch ($key.KeyChar) {
+                    'q' { $shouldQuit = $true }
+                    'R' { $doRestart  = $true }
+                }
+            }
         } elseif ($round % 10 -eq 0 -or $round -eq $Count) {
             Write-Host "`r  Round $round / $Count   " -NoNewline -ForegroundColor DarkGray
         }
 
+        if ($shouldQuit -or $doRestart) { continue }
+
         if ($Count -gt 0 -and $round -ge $Count) { break }
 
-        # Sleep for the remainder of the interval
-        $elapsed = ([DateTime]::UtcNow - $t0).TotalSeconds
-        $wait    = $Interval - $elapsed
-        if ($wait -gt 0) { Start-Sleep -Milliseconds ([int]($wait * 1000)) }
+        # Sleep for the remainder of the interval, polling for keypresses
+        $elapsed  = ([DateTime]::UtcNow - $t0).TotalSeconds
+        $waitMs   = [int](($Interval - $elapsed) * 1000)
+        $deadline = [DateTime]::UtcNow.AddMilliseconds($waitMs)
+        while ($waitMs -gt 0 -and [DateTime]::UtcNow -lt $deadline `
+                               -and -not $shouldQuit -and -not $doRestart) {
+            if (-not $Report -and [Console]::KeyAvailable) {
+                $key = [Console]::ReadKey($true)
+                switch ($key.KeyChar) {
+                    'q' { $shouldQuit = $true }
+                    'R' { $doRestart  = $true }
+                }
+            }
+            Start-Sleep -Milliseconds 50
+        }
     }
 } finally {
     [Console]::CursorVisible = $true
