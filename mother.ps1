@@ -57,6 +57,8 @@ $script:Tick       = 0
 $script:StatusMsg  = 'AWAITING INSTRUCTION.'
 $script:ViewH      = 20
 $script:DispRow    = 0
+$script:PrevW      = 0
+$script:PrevH      = 0
 $script:Queue      = $null
 $script:RunPS      = $null
 $script:RunRS      = $null
@@ -115,8 +117,16 @@ function script:WrapText([string]$text, [int]$w) {
 
 # ── Rendering ─────────────────────────────────────────────────────────────────
 function script:Render {
-    $W     = [Math]::Max(80, [Console]::WindowWidth) - 3
+    $W     = [Math]::Max(80, [Console]::WindowWidth) - 33
     $H     = [Console]::WindowHeight
+
+    # On resize: clear and reanchor so borders don't bow
+    if ($W -ne $script:PrevW -or $H -ne $script:PrevH) {
+        [Console]::Clear()
+        $script:DispRow = 0
+        $script:PrevW   = $W
+        $script:PrevH   = $H
+    }
     # Layout: 8 fixed rows + mainH rows
     # Row 0:        top border
     # Row 1:        header content
@@ -201,12 +211,13 @@ function script:Render {
 
     # ── input content ─────────────────────────────────────────────────────────
     $cursor  = if ($script:Tick % 10 -lt 5) { [char]0x2588 } else { ' ' }
+    $iPrompt = ' >> '
     $iRaw    = if ($isInput) {
-        Fit ($script:InputText + $cursor) ($W - 2)
+        Fit ($iPrompt + $script:InputText + $cursor) ($W - 2)
     } elseif ($script:InputText) {
-        Fit $script:InputText ($W - 2)
+        Fit ($iPrompt + $script:InputText) ($W - 2)
     } else {
-        Fit $MODS[$script:Sel].Hint ($W - 2)
+        Fit ($iPrompt + $MODS[$script:Sel].Hint) ($W - 2)
     }
     $iStyle  = if ($isInput) { $B } elseif ($script:InputText) { $N } else { $F }
     [void]$buf.Append("${inBorder}${VT}${RST}${iStyle}${iRaw}${RST}${inBorder}${VT}${RST}`n")
@@ -246,7 +257,7 @@ $Q={param($t,$s);$Queue.Enqueue(@{Type=$t;Text=$s})}
 $target=$Target.Trim()
 if(-not $target){$Queue.Enqueue(@{Type='Error';Text='NO TARGET SPECIFIED.'});$Queue.Enqueue(@{Type='Done';Text=''});return}
 $parts=$target -split '\s+',2
-$host=$parts[0]; $portSpec=if($parts.Count-gt 1){$parts[1]}else{''}
+$dest=$parts[0]; $portSpec=if($parts.Count-gt 1){$parts[1]}else{''}   # $dest avoids $Host clash
 $ports=@()
 if(-not $portSpec){$ports=1..1024}
 elseif($portSpec -match '^(\d+)-(\d+)$'){$ports=[int]$Matches[1]..[int]$Matches[2]}
@@ -254,10 +265,10 @@ else{
     try{$ports=$portSpec -split ',' |ForEach-Object{[int]$_.Trim()}}
     catch{$Queue.Enqueue(@{Type='Error';Text="INVALID PORT SPEC: $portSpec"});$Queue.Enqueue(@{Type='Done';Text=''});return}
 }
-$Queue.Enqueue(@{Type='Bright';Text="PORT SCAN: $($host.ToUpper())  [$($ports.Count) PORTS]"})
+$Queue.Enqueue(@{Type='Bright';Text="PORT SCAN: $($dest.ToUpper())  [$($ports.Count) PORTS]"})
 $Queue.Enqueue(@{Type='Dim';Text='  PORT    STATE    SERVICE'})
 try{
-    $addrs=[Net.Dns]::GetHostAddresses($host)
+    $addrs=[Net.Dns]::GetHostAddresses($dest)
     $ip=($addrs|Where-Object{$_.AddressFamily-eq'InterNetwork'}|Select-Object -First 1)
     $ip=if($ip){$ip.IPAddressToString}else{($addrs|Select-Object -First 1).IPAddressToString}
 }catch{$Queue.Enqueue(@{Type='Error';Text="DNS FAILED: $($_.Exception.Message.ToUpper())"});$Queue.Enqueue(@{Type='Done';Text=''});return}
